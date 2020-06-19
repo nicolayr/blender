@@ -22,20 +22,20 @@
 #include "bvh/bvh_params.h"
 #include "bvh_split.h"
 
+#include "render/curves.h"
 #include "render/hair.h"
 #include "render/mesh.h"
 #include "render/object.h"
 #include "render/scene.h"
-#include "render/curves.h"
 
 #include "util/util_algorithm.h"
 #include "util/util_foreach.h"
 #include "util/util_logging.h"
 #include "util/util_progress.h"
-#include "util/util_stack_allocator.h"
-#include "util/util_simd.h"
-#include "util/util_time.h"
 #include "util/util_queue.h"
+#include "util/util_simd.h"
+#include "util/util_stack_allocator.h"
+#include "util/util_time.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -885,9 +885,6 @@ BVHNode *BVHBuild::create_leaf_node(const BVHRange &range, const vector<BVHRefer
 
       bounds[type_index].grow(ref.bounds());
       visibility[type_index] |= objects[ref.prim_object()]->visibility_for_tracing();
-      if (ref.prim_type() & PRIMITIVE_ALL_CURVE) {
-        visibility[type_index] |= PATH_RAY_CURVE;
-      }
       ++num_new_prims;
     }
     else {

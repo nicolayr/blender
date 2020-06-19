@@ -24,28 +24,30 @@
 
 #include "UI_resources.h"
 
-#include "BKE_anim.h"
+#include "BKE_anim_path.h"
 #include "BKE_camera.h"
 #include "BKE_constraint.h"
 #include "BKE_curve.h"
 #include "BKE_global.h"
 #include "BKE_mball.h"
 #include "BKE_mesh.h"
-#include "BKE_movieclip.h"
 #include "BKE_modifier.h"
+#include "BKE_movieclip.h"
 #include "BKE_object.h"
 #include "BKE_tracking.h"
 
+#include "BLI_listbase.h"
+
 #include "DNA_camera_types.h"
 #include "DNA_constraint_types.h"
-#include "DNA_gpencil_types.h"
+#include "DNA_curve_types.h"
+#include "DNA_fluid_types.h"
 #include "DNA_lightprobe_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_meta_types.h"
 #include "DNA_modifier_types.h"
-#include "DNA_object_force_types.h"
+#include "DNA_pointcache_types.h"
 #include "DNA_rigidbody_types.h"
-#include "DNA_fluid_types.h"
 
 #include "DEG_depsgraph_query.h"
 
@@ -63,6 +65,7 @@ void OVERLAY_extra_cache_init(OVERLAY_Data *vedata)
   OVERLAY_PassList *psl = vedata->psl;
   OVERLAY_TextureList *txl = vedata->txl;
   OVERLAY_PrivateData *pd = vedata->stl->pd;
+  const bool is_select = DRW_state_is_select();
 
   DRWState state_blend = DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_ALPHA;
   DRW_PASS_CREATE(psl->extra_blend_ps, state_blend | pd->clipping_state);
@@ -78,8 +81,8 @@ void OVERLAY_extra_cache_init(OVERLAY_Data *vedata)
     struct GPUTexture *tex = DRW_state_is_fbo() ? dtxl->depth : txl->dummy_depth_tx;
 
     pd->extra_grid_grp = grp = DRW_shgroup_create(sh, psl->extra_grid_ps);
-    DRW_shgroup_uniform_texture_persistent(grp, "depthBuffer", tex);
-    DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+    DRW_shgroup_uniform_texture(grp, "depthBuffer", tex);
+    DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
     DRW_shgroup_uniform_bool_copy(grp, "isTransform", (G.moving & G_TRANSFORM_OBJ) != 0);
   }
 
@@ -106,10 +109,10 @@ void OVERLAY_extra_cache_init(OVERLAY_Data *vedata)
     /* Sorted by shader to avoid state changes during render. */
     {
       format = formats->instance_extra;
-      sh = OVERLAY_shader_extra();
+      sh = OVERLAY_shader_extra(is_select);
 
       grp = DRW_shgroup_create(sh, extra_ps);
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
 
       grp_sub = DRW_shgroup_create_sub(grp);
       cb->camera_distances = BUF_INSTANCE(grp_sub, format, DRW_cache_camera_distances_get());
@@ -154,7 +157,7 @@ void OVERLAY_extra_cache_init(OVERLAY_Data *vedata)
     {
       format = formats->instance_extra;
       grp = DRW_shgroup_create(sh, psl->extra_blend_ps); /* NOTE: not the same pass! */
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
 
       grp_sub = DRW_shgroup_create_sub(grp);
       DRW_shgroup_state_enable(grp_sub, DRW_STATE_DEPTH_LESS_EQUAL | DRW_STATE_CULL_BACK);
@@ -171,38 +174,38 @@ void OVERLAY_extra_cache_init(OVERLAY_Data *vedata)
       sh = OVERLAY_shader_extra_groundline();
 
       grp = DRW_shgroup_create(sh, extra_ps);
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
       DRW_shgroup_state_enable(grp, DRW_STATE_BLEND_ALPHA);
 
       cb->groundline = BUF_INSTANCE(grp, format, DRW_cache_groundline_get());
     }
     {
-      sh = OVERLAY_shader_extra_wire(false);
+      sh = OVERLAY_shader_extra_wire(false, is_select);
 
       grp = DRW_shgroup_create(sh, extra_ps);
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
 
       cb->extra_dashed_lines = BUF_LINE(grp, formats->pos_color);
       cb->extra_lines = BUF_LINE(grp, formats->wire_extra);
     }
     {
-      sh = OVERLAY_shader_extra_wire(true);
+      sh = OVERLAY_shader_extra_wire(true, is_select);
 
       cb->extra_wire = grp = DRW_shgroup_create(sh, extra_ps);
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
     }
     {
       sh = OVERLAY_shader_extra_loose_point();
 
       cb->extra_loose_points = grp = DRW_shgroup_create(sh, extra_ps);
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
     }
     {
       format = formats->pos;
       sh = OVERLAY_shader_extra_point();
 
       grp = DRW_shgroup_create(sh, psl->extra_centers_ps); /* NOTE: not the same pass! */
-      DRW_shgroup_uniform_block_persistent(grp, "globalsBlock", G_draw.block_ubo);
+      DRW_shgroup_uniform_block(grp, "globalsBlock", G_draw.block_ubo);
 
       grp_sub = DRW_shgroup_create_sub(grp);
       DRW_shgroup_uniform_vec4_copy(grp_sub, "color", G_draw.block.colorActive);
@@ -475,13 +478,25 @@ static void OVERLAY_texture_space(OVERLAY_ExtraCallBuffers *cb, Object *ob, cons
       texcosize = mb->size;
       break;
     }
+    case ID_HA:
+    case ID_PT:
+    case ID_VO: {
+      /* No user defined texture space support. */
+      break;
+    }
     default:
       BLI_assert(0);
   }
 
   float mat[4][4];
-  size_to_mat4(mat, texcosize);
-  copy_v3_v3(mat[3], texcoloc);
+
+  if (texcoloc != NULL && texcosize != NULL) {
+    size_to_mat4(mat, texcosize);
+    copy_v3_v3(mat[3], texcoloc);
+  }
+  else {
+    unit_m4(mat);
+  }
 
   mul_m4_m4m4(mat, ob->obmat, mat);
 
@@ -754,10 +769,7 @@ void OVERLAY_lightprobe_cache_populate(OVERLAY_Data *vedata, Object *ob)
 
         uint cell_count = prb->grid_resolution_x * prb->grid_resolution_y * prb->grid_resolution_z;
         DRWShadingGroup *grp = DRW_shgroup_create_sub(vedata->stl->pd->extra_grid_grp);
-        DRW_shgroup_uniform_vec4_copy(grp, "gridModelMatrix[0]", instdata.mat[0]);
-        DRW_shgroup_uniform_vec4_copy(grp, "gridModelMatrix[1]", instdata.mat[1]);
-        DRW_shgroup_uniform_vec4_copy(grp, "gridModelMatrix[2]", instdata.mat[2]);
-        DRW_shgroup_uniform_vec4_copy(grp, "gridModelMatrix[3]", instdata.mat[3]);
+        DRW_shgroup_uniform_vec4_array_copy(grp, "gridModelMatrix", instdata.mat, 4);
         DRW_shgroup_call_procedural_points(grp, NULL, cell_count);
       }
       break;
@@ -875,10 +887,8 @@ static void camera_view3d_reconstruction(OVERLAY_ExtraCallBuffers *cb,
   UI_GetThemeColor4ubv(TH_SELECT, text_color_selected);
   UI_GetThemeColor4ubv(TH_TEXT, text_color_unselected);
 
-  float camera_mat[4][4], normal_mat[4][4];
+  float camera_mat[4][4];
   BKE_tracking_get_camera_object_matrix(ob, camera_mat);
-
-  normalize_m4_m4(normal_mat, ob->obmat);
 
   LISTBASE_FOREACH (MovieTrackingObject *, tracking_object, &tracking->objects) {
     float tracking_object_mat[4][4];
@@ -889,16 +899,19 @@ static void camera_view3d_reconstruction(OVERLAY_ExtraCallBuffers *cb,
     else {
       const int framenr = BKE_movieclip_remap_scene_to_clip_frame(
           clip, DEG_get_ctime(draw_ctx->depsgraph));
+
       float object_mat[4][4];
       BKE_tracking_camera_get_reconstructed_interpolate(
           tracking, tracking_object, framenr, object_mat);
 
-      invert_m4(object_mat);
-      mul_m4_m4m4(tracking_object_mat, normal_mat, object_mat);
+      float object_imat[4][4];
+      invert_m4_m4(object_imat, object_mat);
+
+      mul_m4_m4m4(tracking_object_mat, ob->obmat, object_imat);
     }
 
     ListBase *tracksbase = BKE_tracking_object_get_tracks(tracking, tracking_object);
-    for (MovieTrackingTrack *track = tracksbase->first; track; track = track->next) {
+    LISTBASE_FOREACH (MovieTrackingTrack *, track, tracksbase) {
       if ((track->flag & TRACK_HAS_BUNDLE) == 0) {
         continue;
       }
@@ -1145,6 +1158,10 @@ void OVERLAY_camera_cache_populate(OVERLAY_Data *vedata, Object *ob)
   }
   else {
     copy_v3_fl3(scale, len_v3(ob->obmat[0]), len_v3(ob->obmat[1]), len_v3(ob->obmat[2]));
+    /* Avoid division by 0. */
+    if (ELEM(0.0f, scale[0], scale[1], scale[2])) {
+      return;
+    }
     invert_v3(scale);
   }
 
@@ -1331,89 +1348,6 @@ static void OVERLAY_relationship_lines(OVERLAY_ExtraCallBuffers *cb,
 /** \} */
 
 /* -------------------------------------------------------------------- */
-/** \name GPencil.
- * \{ */
-
-static void OVERLAY_gpencil_color_names(Object *ob)
-{
-  if (ob->mode != OB_MODE_EDIT_GPENCIL) {
-    return;
-  }
-
-  bGPdata *gpd = (bGPdata *)ob->data;
-  if (gpd == NULL) {
-    return;
-  }
-
-  const DRWContextState *draw_ctx = DRW_context_state_get();
-  ViewLayer *view_layer = draw_ctx->view_layer;
-  int theme_id = DRW_object_wire_theme_get(ob, view_layer, NULL);
-  uchar color[4];
-  /* Color Management: Exception here as texts are drawn in sRGB space directly.  */
-  UI_GetThemeColor3ubv(theme_id, color);
-  color[3] = 255;
-  struct DRWTextStore *dt = DRW_text_cache_ensure();
-
-  for (bGPDlayer *gpl = gpd->layers.first; gpl; gpl = gpl->next) {
-    if (gpl->flag & GP_LAYER_HIDE) {
-      continue;
-    }
-    bGPDframe *gpf = gpl->actframe;
-    if (gpf == NULL) {
-      continue;
-    }
-    for (bGPDstroke *gps = gpf->strokes.first; gps; gps = gps->next) {
-      Material *ma = BKE_object_material_get(ob, gps->mat_nr + 1);
-      if (ma == NULL) {
-        continue;
-      }
-
-      MaterialGPencilStyle *gp_style = ma->gp_style;
-      /* skip stroke if it doesn't have any valid data */
-      if ((gps->points == NULL) || (gps->totpoints < 1) || (gp_style == NULL)) {
-        continue;
-      }
-      /* check if the color is visible */
-      if (gp_style->flag & GP_STYLE_COLOR_HIDE) {
-        continue;
-      }
-
-      /* only if selected */
-      if (gps->flag & GP_STROKE_SELECT) {
-        float fpt[3];
-        for (int i = 0; i < gps->totpoints; i++) {
-          bGPDspoint *pt = &gps->points[i];
-          if (pt->flag & GP_SPOINT_SELECT) {
-            mul_v3_m4v3(fpt, ob->obmat, &pt->x);
-            DRW_text_cache_add(dt,
-                               fpt,
-                               ma->id.name + 2,
-                               strlen(ma->id.name + 2),
-                               10,
-                               0,
-                               DRW_TEXT_CACHE_GLOBALSPACE | DRW_TEXT_CACHE_STRING_PTR,
-                               color);
-            break;
-          }
-        }
-      }
-    }
-  }
-}
-
-void OVERLAY_gpencil_cache_populate(OVERLAY_Data *UNUSED(vedata), Object *ob)
-{
-  /* don't show object extras in set's */
-  if ((ob->base_flag & (BASE_FROM_SET | BASE_FROM_DUPLI)) == 0) {
-    if ((ob->dtx & OB_DRAWNAME) && DRW_state_show_text()) {
-      OVERLAY_gpencil_color_names(ob);
-    }
-  }
-}
-
-/** \} */
-
-/* -------------------------------------------------------------------- */
 /** \name Volumetric / Smoke sim
  * \{ */
 
@@ -1437,9 +1371,9 @@ static void OVERLAY_volume_extra(OVERLAY_ExtraCallBuffers *cb,
     madd_v3fl_v3fl_v3fl_v3i(min, mds->p0, mds->cell_size, mds->res_min);
     float voxel_cubemat[4][4] = {{0.0f}};
     /* scale small cube to voxel size */
-    voxel_cubemat[0][0] = 1.0f / (float)mds->base_res[0];
-    voxel_cubemat[1][1] = 1.0f / (float)mds->base_res[1];
-    voxel_cubemat[2][2] = 1.0f / (float)mds->base_res[2];
+    voxel_cubemat[0][0] = mds->cell_size[0] / 2.0f;
+    voxel_cubemat[1][1] = mds->cell_size[1] / 2.0f;
+    voxel_cubemat[2][2] = mds->cell_size[2] / 2.0f;
     voxel_cubemat[3][3] = 1.0f;
     /* translate small cube to corner */
     copy_v3_v3(voxel_cubemat[3], min);
@@ -1570,8 +1504,9 @@ void OVERLAY_extra_cache_populate(OVERLAY_Data *vedata, Object *ob)
   const bool draw_xform = draw_ctx->object_mode == OB_MODE_OBJECT &&
                           (scene->toolsettings->transform_flag & SCE_XFORM_DATA_ORIGIN) &&
                           (ob->base_flag & BASE_SELECTED) && !is_select_mode;
-  const bool draw_volume = !from_dupli && (md = modifiers_findByType(ob, eModifierType_Fluid)) &&
-                           (modifier_isEnabled(scene, md, eModifierMode_Realtime)) &&
+  const bool draw_volume = !from_dupli &&
+                           (md = BKE_modifiers_findby_type(ob, eModifierType_Fluid)) &&
+                           (BKE_modifier_is_enabled(scene, md, eModifierMode_Realtime)) &&
                            (((FluidModifierData *)md)->domain != NULL);
 
   float *color;

@@ -24,13 +24,13 @@
 #ifndef __DNA_MOVIECLIP_TYPES_H__
 #define __DNA_MOVIECLIP_TYPES_H__
 
+#include "DNA_ID.h"
+#include "DNA_color_types.h" /* for color management */
+#include "DNA_tracking_types.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "DNA_ID.h"
-#include "DNA_tracking_types.h"
-#include "DNA_color_types.h" /* for color management */
 
 struct AnimData;
 struct ImBuf;

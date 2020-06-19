@@ -16,11 +16,6 @@
 
 /* This class implements a ray accelerator for Cycles using Intel's Embree library.
  * It supports triangles, curves, object and deformation blur and instancing.
- * Not supported are thick line segments, those have no native equivalent in Embree.
- * They could be implemented using Embree's thick curves, at the expense of wasted memory.
- * User defined intersections for Embree could also be an option, but since Embree only uses
- * aligned BVHs for user geometry, this would come with reduced performance and/or higher memory
- * usage.
  *
  * Since Embree allows object to be either curves or triangles but not both, Cycles object IDs are
  * mapped to Embree IDs by multiplying by two and adding one for curves.
@@ -35,9 +30,9 @@
 
 #ifdef WITH_EMBREE
 
+#  include <embree3/rtcore_geometry.h>
 #  include <pmmintrin.h>
 #  include <xmmintrin.h>
-#  include <embree3/rtcore_geometry.h>
 
 #  include "bvh/bvh_embree.h"
 
@@ -45,9 +40,9 @@
  */
 #  include "kernel/bvh/bvh_embree.h"
 #  include "kernel/kernel_compat_cpu.h"
-#  include "kernel/split/kernel_split_data_types.h"
 #  include "kernel/kernel_globals.h"
 #  include "kernel/kernel_random.h"
+#  include "kernel/split/kernel_split_data_types.h"
 
 #  include "render/hair.h"
 #  include "render/mesh.h"
@@ -728,8 +723,9 @@ void BVHEmbree::update_curve_vertex_buffer(RTCGeometry geom_id, const Hair *hair
   }
 
   /* Catmull-Rom splines need extra CVs at the beginning and end of each curve. */
+  size_t num_keys_embree = num_keys;
   if (use_curves) {
-    num_keys += num_curves * 2;
+    num_keys_embree += num_curves * 2;
   }
 
   /* Copy the CV data to Embree */
@@ -746,7 +742,7 @@ void BVHEmbree::update_curve_vertex_buffer(RTCGeometry geom_id, const Hair *hair
     }
 
     float4 *rtc_verts = (float4 *)rtcSetNewGeometryBuffer(
-        geom_id, RTC_BUFFER_TYPE_VERTEX, t, RTC_FORMAT_FLOAT4, sizeof(float) * 4, num_keys);
+        geom_id, RTC_BUFFER_TYPE_VERTEX, t, RTC_FORMAT_FLOAT4, sizeof(float) * 4, num_keys_embree);
 
     assert(rtc_verts);
     if (rtc_verts) {
@@ -767,13 +763,28 @@ void BVHEmbree::update_curve_vertex_buffer(RTCGeometry geom_id, const Hair *hair
         }
       }
       else {
-        for (size_t j = 0; j < num_keys; ++j) {
+        for (size_t j = 0; j < num_keys_embree; ++j) {
           rtc_verts[j] = float3_to_float4(verts[j]);
           rtc_verts[j].w = curve_radius[j];
         }
       }
     }
   }
+#  if RTC_VERSION >= 30900
+  if (!use_curves) {
+    unsigned char *flags = (unsigned char *)rtcSetNewGeometryBuffer(geom_id,
+                                                                    RTC_BUFFER_TYPE_FLAGS,
+                                                                    0,
+                                                                    RTC_FORMAT_UCHAR,
+                                                                    sizeof(unsigned char),
+                                                                    num_keys_embree);
+    flags[0] = RTC_CURVE_FLAG_NEIGHBOR_RIGHT;
+    ::memset(flags + 1,
+             RTC_CURVE_FLAG_NEIGHBOR_RIGHT | RTC_CURVE_FLAG_NEIGHBOR_RIGHT,
+             num_keys_embree - 2);
+    flags[num_keys_embree - 1] = RTC_CURVE_FLAG_NEIGHBOR_LEFT;
+  }
+#  endif
 }
 
 void BVHEmbree::add_curves(const Object *ob, const Hair *hair, int i)
@@ -809,10 +820,18 @@ void BVHEmbree::add_curves(const Object *ob, const Hair *hair, int i)
   size_t prim_tri_index_size = pack.prim_index.size();
   pack.prim_tri_index.resize(prim_tri_index_size + num_segments);
 
+#  if RTC_VERSION >= 30900
+  enum RTCGeometryType type = (!use_curves) ?
+                                  (use_ribbons ? RTC_GEOMETRY_TYPE_FLAT_LINEAR_CURVE :
+                                                 RTC_GEOMETRY_TYPE_ROUND_LINEAR_CURVE) :
+                                  (use_ribbons ? RTC_GEOMETRY_TYPE_FLAT_CATMULL_ROM_CURVE :
+                                                 RTC_GEOMETRY_TYPE_ROUND_CATMULL_ROM_CURVE);
+#  else
   enum RTCGeometryType type = (!use_curves) ?
                                   RTC_GEOMETRY_TYPE_FLAT_LINEAR_CURVE :
                                   (use_ribbons ? RTC_GEOMETRY_TYPE_FLAT_CATMULL_ROM_CURVE :
                                                  RTC_GEOMETRY_TYPE_ROUND_CATMULL_ROM_CURVE);
+#  endif
 
   RTCGeometry geom_id = rtcNewGeometry(rtc_shared_device, type);
   rtcSetGeometryTessellationRate(geom_id, curve_subdivisions);

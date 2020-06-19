@@ -37,15 +37,20 @@
 #include "BKE_lib_remap.h"
 #include "BKE_main.h"
 
-#include "BLI_utildefines.h"
 #include "BLI_ghash.h"
 #include "BLI_listbase.h"
 #include "BLI_string.h"
+#include "BLI_utildefines.h"
 
 #include "RNA_access.h"
 #include "RNA_types.h"
 
 #define OVERRIDE_AUTO_CHECK_DELAY 0.2 /* 200ms between auto-override checks. */
+//#define DEBUG_OVERRIDE_TIMEIT
+
+#ifdef DEBUG_OVERRIDE_TIMEIT
+#  include "PIL_time_utildefines.h"
+#endif
 
 static void lib_override_library_property_copy(IDOverrideLibraryProperty *op_dst,
                                                IDOverrideLibraryProperty *op_src);
@@ -87,7 +92,7 @@ IDOverrideLibrary *BKE_lib_override_library_init(ID *local_id, ID *reference_id)
 
   if (ancestor_id != NULL && ancestor_id->override_library != NULL) {
     /* Original ID has a template, use it! */
-    BKE_lib_override_library_copy(local_id, ancestor_id);
+    BKE_lib_override_library_copy(local_id, ancestor_id, true);
     if (local_id->override_library->reference != reference_id) {
       id_us_min(local_id->override_library->reference);
       local_id->override_library->reference = reference_id;
@@ -105,8 +110,8 @@ IDOverrideLibrary *BKE_lib_override_library_init(ID *local_id, ID *reference_id)
   return local_id->override_library;
 }
 
-/** Deep copy of a whole override from \a src_id to \a dst_id. */
-void BKE_lib_override_library_copy(ID *dst_id, const ID *src_id)
+/** Shalow or deep copy of a whole override from \a src_id to \a dst_id. */
+void BKE_lib_override_library_copy(ID *dst_id, const ID *src_id, const bool do_full_copy)
 {
   BLI_assert(src_id->override_library != NULL);
 
@@ -133,12 +138,15 @@ void BKE_lib_override_library_copy(ID *dst_id, const ID *src_id)
                                             (ID *)src_id;
   id_us_plus(dst_id->override_library->reference);
 
-  BLI_duplicatelist(&dst_id->override_library->properties, &src_id->override_library->properties);
-  for (IDOverrideLibraryProperty *op_dst = dst_id->override_library->properties.first,
-                                 *op_src = src_id->override_library->properties.first;
-       op_dst;
-       op_dst = op_dst->next, op_src = op_src->next) {
-    lib_override_library_property_copy(op_dst, op_src);
+  if (do_full_copy) {
+    BLI_duplicatelist(&dst_id->override_library->properties,
+                      &src_id->override_library->properties);
+    for (IDOverrideLibraryProperty *op_dst = dst_id->override_library->properties.first,
+                                   *op_src = src_id->override_library->properties.first;
+         op_dst;
+         op_dst = op_dst->next, op_src = op_src->next) {
+      lib_override_library_property_copy(op_dst, op_src);
+    }
   }
 
   dst_id->tag &= ~LIB_TAG_OVERRIDE_LIBRARY_REFOK;
@@ -153,7 +161,7 @@ void BKE_lib_override_library_clear(IDOverrideLibrary *override, const bool do_i
     BLI_ghash_clear(override->runtime, NULL, NULL);
   }
 
-  for (IDOverrideLibraryProperty *op = override->properties.first; op; op = op->next) {
+  LISTBASE_FOREACH (IDOverrideLibraryProperty *, op, &override->properties) {
     lib_override_library_property_clear(op);
   }
   BLI_freelistN(&override->properties);
@@ -189,7 +197,6 @@ static ID *lib_override_library_create_from(Main *bmain, ID *reference_id)
   id_us_min(local_id);
 
   BKE_lib_override_library_init(local_id, reference_id);
-  local_id->override_library->flag |= OVERRIDE_LIBRARY_AUTO;
 
   return local_id;
 }
@@ -303,7 +310,8 @@ BLI_INLINE IDOverrideLibraryRuntime *override_library_rna_path_mapping_ensure(
     IDOverrideLibrary *override)
 {
   if (override->runtime == NULL) {
-    override->runtime = BLI_ghash_new(BLI_ghashutil_strhash_p, BLI_ghashutil_strcmp, __func__);
+    override->runtime = BLI_ghash_new(
+        BLI_ghashutil_strhash_p_murmur, BLI_ghashutil_strcmp, __func__);
     for (IDOverrideLibraryProperty *op = override->properties.first; op != NULL; op = op->next) {
       BLI_ghash_insert(override->runtime, op->rna_path, op);
     }
@@ -371,7 +379,7 @@ void lib_override_library_property_clear(IDOverrideLibraryProperty *op)
 
   MEM_freeN(op->rna_path);
 
-  for (IDOverrideLibraryPropertyOperation *opop = op->operations.first; opop; opop = opop->next) {
+  LISTBASE_FOREACH (IDOverrideLibraryPropertyOperation *, opop, &op->operations) {
     lib_override_library_property_operation_clear(opop);
   }
   BLI_freelistN(&op->operations);
@@ -383,10 +391,10 @@ void lib_override_library_property_clear(IDOverrideLibraryProperty *op)
 void BKE_lib_override_library_property_delete(IDOverrideLibrary *override,
                                               IDOverrideLibraryProperty *override_property)
 {
-  lib_override_library_property_clear(override_property);
   if (override->runtime != NULL) {
     BLI_ghash_remove(override->runtime, override_property->rna_path, NULL, NULL);
   }
+  lib_override_library_property_clear(override_property);
   BLI_freelinkN(&override->properties, override_property);
 }
 
@@ -559,6 +567,46 @@ void BKE_lib_override_library_property_operation_delete(
 }
 
 /**
+ * Validate that required data for a given operation are available.
+ */
+bool BKE_lib_override_library_property_operation_operands_validate(
+    struct IDOverrideLibraryPropertyOperation *override_property_operation,
+    struct PointerRNA *ptr_dst,
+    struct PointerRNA *ptr_src,
+    struct PointerRNA *ptr_storage,
+    struct PropertyRNA *prop_dst,
+    struct PropertyRNA *prop_src,
+    struct PropertyRNA *prop_storage)
+{
+  switch (override_property_operation->operation) {
+    case IDOVERRIDE_LIBRARY_OP_NOOP:
+      return true;
+    case IDOVERRIDE_LIBRARY_OP_ADD:
+      ATTR_FALLTHROUGH;
+    case IDOVERRIDE_LIBRARY_OP_SUBTRACT:
+      ATTR_FALLTHROUGH;
+    case IDOVERRIDE_LIBRARY_OP_MULTIPLY:
+      if (ptr_storage == NULL || ptr_storage->data == NULL || prop_storage == NULL) {
+        BLI_assert(!"Missing data to apply differential override operation.");
+        return false;
+      }
+      ATTR_FALLTHROUGH;
+    case IDOVERRIDE_LIBRARY_OP_INSERT_AFTER:
+      ATTR_FALLTHROUGH;
+    case IDOVERRIDE_LIBRARY_OP_INSERT_BEFORE:
+      ATTR_FALLTHROUGH;
+    case IDOVERRIDE_LIBRARY_OP_REPLACE:
+      if ((ptr_dst == NULL || ptr_dst->data == NULL || prop_dst == NULL) ||
+          (ptr_src == NULL || ptr_src->data == NULL || prop_src == NULL)) {
+        BLI_assert(!"Missing data to apply override operation.");
+        return false;
+      }
+  }
+
+  return true;
+}
+
+/**
  * Check that status of local data-block is still valid against current reference one.
  *
  * It means that all overridable, but not overridden, properties' local values must be equal to
@@ -602,6 +650,7 @@ bool BKE_lib_override_library_status_check_local(Main *bmain, ID *local)
                                    &rnaptr_local,
                                    &rnaptr_reference,
                                    NULL,
+                                   0,
                                    local->override_library,
                                    RNA_OVERRIDE_COMPARE_IGNORE_NON_OVERRIDABLE |
                                        RNA_OVERRIDE_COMPARE_IGNORE_OVERRIDDEN,
@@ -665,6 +714,7 @@ bool BKE_lib_override_library_status_check_reference(Main *bmain, ID *local)
                                    &rnaptr_local,
                                    &rnaptr_reference,
                                    NULL,
+                                   0,
                                    local->override_library,
                                    RNA_OVERRIDE_COMPARE_IGNORE_OVERRIDDEN,
                                    NULL)) {
@@ -688,13 +738,15 @@ bool BKE_lib_override_library_status_check_reference(Main *bmain, ID *local)
  * Generating diff values and applying overrides are much cheaper.
  *
  * \return true if new overriding op was created, or some local data was reset. */
-bool BKE_lib_override_library_operations_create(Main *bmain, ID *local, const bool force_auto)
+bool BKE_lib_override_library_operations_create(Main *bmain,
+                                                ID *local,
+                                                const bool UNUSED(force_auto))
 {
   BLI_assert(local->override_library != NULL);
   const bool is_template = (local->override_library->reference == NULL);
   bool ret = false;
 
-  if (!is_template && (force_auto || local->override_library->flag & OVERRIDE_LIBRARY_AUTO)) {
+  if (!is_template) {
     /* Do not attempt to generate overriding rules from an empty place-holder generated by link
      * code when it cannot find to actual library/ID. Much better to keep the local datablock as
      * is in the file in that case, until broken lib is fixed. */
@@ -704,8 +756,8 @@ bool BKE_lib_override_library_operations_create(Main *bmain, ID *local, const bo
 
     if (GS(local->name) == ID_OB) {
       /* Our beloved pose's bone cross-data pointers... Usually, depsgraph evaluation would ensure
-       * this is valid, but in some cases (like hidden collections etc.) this won't be the case, so
-       * we need to take care of this ourselves. */
+       * this is valid, but in some situations (like hidden collections etc.) this won't be the
+       * case, so we need to take care of this ourselves. */
       Object *ob_local = (Object *)local;
       if (ob_local->data != NULL && ob_local->type == OB_ARMATURE && ob_local->pose != NULL &&
           ob_local->pose->flag & POSE_RECALC) {
@@ -722,6 +774,7 @@ bool BKE_lib_override_library_operations_create(Main *bmain, ID *local, const bo
                                 &rnaptr_local,
                                 &rnaptr_reference,
                                 NULL,
+                                0,
                                 local->override_library,
                                 RNA_OVERRIDE_COMPARE_CREATE | RNA_OVERRIDE_COMPARE_RESTORE,
                                 &report_flags);
@@ -748,11 +801,103 @@ void BKE_lib_override_library_main_operations_create(Main *bmain, const bool for
 {
   ID *id;
 
+  /* When force-auto is set, we also remove all unused existing override properties & operations.
+   */
+  if (force_auto) {
+    BKE_lib_override_library_main_tag(bmain, IDOVERRIDE_LIBRARY_TAG_UNUSED, true);
+  }
+
   FOREACH_MAIN_ID_BEGIN (bmain, id) {
     if ((ID_IS_OVERRIDE_LIBRARY(id) && force_auto) ||
-        (ID_IS_OVERRIDE_LIBRARY_AUTO(id) && (id->tag & LIB_TAG_OVERRIDE_LIBRARY_AUTOREFRESH))) {
+        (id->tag & LIB_TAG_OVERRIDE_LIBRARY_AUTOREFRESH)) {
       BKE_lib_override_library_operations_create(bmain, id, force_auto);
       id->tag &= ~LIB_TAG_OVERRIDE_LIBRARY_AUTOREFRESH;
+    }
+  }
+  FOREACH_MAIN_ID_END;
+
+  if (force_auto) {
+    BKE_lib_override_library_main_unused_cleanup(bmain);
+  }
+}
+
+/** Set or clear given tag in all operations as unused in that override property data. */
+void BKE_lib_override_library_operations_tag(struct IDOverrideLibraryProperty *override_property,
+                                             const short tag,
+                                             const bool do_set)
+{
+  if (override_property != NULL) {
+    if (do_set) {
+      override_property->tag |= tag;
+    }
+    else {
+      override_property->tag &= ~tag;
+    }
+
+    LISTBASE_FOREACH (IDOverrideLibraryPropertyOperation *, opop, &override_property->operations) {
+      if (do_set) {
+        opop->tag |= tag;
+      }
+      else {
+        opop->tag &= ~tag;
+      }
+    }
+  }
+}
+
+/** Set or clear given tag in all properties and operations in that override data. */
+void BKE_lib_override_library_properties_tag(struct IDOverrideLibrary *override,
+                                             const short tag,
+                                             const bool do_set)
+{
+  if (override != NULL) {
+    LISTBASE_FOREACH (IDOverrideLibraryProperty *, op, &override->properties) {
+      BKE_lib_override_library_operations_tag(op, tag, do_set);
+    }
+  }
+}
+
+/** Set or clear given tag in all properties and operations in that Main's ID override data. */
+void BKE_lib_override_library_main_tag(struct Main *bmain, const short tag, const bool do_set)
+{
+  ID *id;
+
+  FOREACH_MAIN_ID_BEGIN (bmain, id) {
+    if (ID_IS_OVERRIDE_LIBRARY(id)) {
+      BKE_lib_override_library_properties_tag(id->override_library, tag, do_set);
+    }
+  }
+  FOREACH_MAIN_ID_END;
+}
+
+/** Remove all tagged-as-unused properties and operations from that ID override data. */
+void BKE_lib_override_library_id_unused_cleanup(struct ID *local)
+{
+  if (local->override_library != NULL) {
+    LISTBASE_FOREACH_MUTABLE (
+        IDOverrideLibraryProperty *, op, &local->override_library->properties) {
+      if (op->tag & IDOVERRIDE_LIBRARY_TAG_UNUSED) {
+        BKE_lib_override_library_property_delete(local->override_library, op);
+      }
+      else {
+        LISTBASE_FOREACH_MUTABLE (IDOverrideLibraryPropertyOperation *, opop, &op->operations) {
+          if (opop->tag & IDOVERRIDE_LIBRARY_TAG_UNUSED) {
+            BKE_lib_override_library_property_operation_delete(op, opop);
+          }
+        }
+      }
+    }
+  }
+}
+
+/** Remove all tagged-as-unused properties and operations from that Main's ID override data. */
+void BKE_lib_override_library_main_unused_cleanup(struct Main *bmain)
+{
+  ID *id;
+
+  FOREACH_MAIN_ID_BEGIN (bmain, id) {
+    if (ID_IS_OVERRIDE_LIBRARY(id)) {
+      BKE_lib_override_library_id_unused_cleanup(id);
     }
   }
   FOREACH_MAIN_ID_END;
@@ -800,6 +945,12 @@ void BKE_lib_override_library_update(Main *bmain, ID *local)
     return;
   }
 
+  /* This ID name is problematic, since it is an 'rna name property' it should not be editable or
+   * different from reference linked ID. But local ID names need to be unique in a given type list
+   * of Main, so we cannot always keep it identical, which is why we need this special manual
+   * handling here. */
+  BLI_strncpy(tmp_id->name, local->name, sizeof(tmp_id->name));
+
   PointerRNA rnaptr_src, rnaptr_dst, rnaptr_storage_stack, *rnaptr_storage = NULL;
   RNA_id_pointer_create(local, &rnaptr_src);
   RNA_id_pointer_create(tmp_id, &rnaptr_dst);
@@ -813,7 +964,7 @@ void BKE_lib_override_library_update(Main *bmain, ID *local)
 
   /* This also transfers all pointers (memory) owned by local to tmp_id, and vice-versa.
    * So when we'll free tmp_id, we'll actually free old, outdated data from local. */
-  BKE_id_swap(bmain, local, tmp_id);
+  BKE_lib_id_swap(bmain, local, tmp_id);
 
   /* Again, horribly inn-efficient in our case, we need something off-Main
    * (aka more generic nolib copy/free stuff)! */
@@ -895,7 +1046,7 @@ ID *BKE_lib_override_library_operations_store_start(Main *bmain,
 
   ID *storage_id;
 #ifdef DEBUG_OVERRIDE_TIMEIT
-  TIMEIT_START_AVERAGED(BKE_override_operations_store_start);
+  TIMEIT_START_AVERAGED(BKE_lib_override_library_operations_store_start);
 #endif
 
   /* XXX TODO We may also want a specialized handling of things here too, to avoid copying heavy
@@ -923,12 +1074,13 @@ ID *BKE_lib_override_library_operations_store_start(Main *bmain,
   local->override_library->storage = storage_id;
 
 #ifdef DEBUG_OVERRIDE_TIMEIT
-  TIMEIT_END_AVERAGED(BKE_override_operations_store_start);
+  TIMEIT_END_AVERAGED(BKE_lib_override_library_operations_store_start);
 #endif
   return storage_id;
 }
 
-/** Restore given ID modified by \a BKE_override_operations_store_start, to its original state. */
+/** Restore given ID modified by \a BKE_lib_override_library_operations_store_start, to its
+ * original state. */
 void BKE_lib_override_library_operations_store_end(
     OverrideLibraryStorage *UNUSED(override_storage), ID *local)
 {

@@ -88,7 +88,7 @@ static void eevee_engine_init(void *ved)
    * `EEVEE_effects_init` needs to go second for TAA. */
   EEVEE_renderpasses_init(vedata);
   EEVEE_effects_init(sldata, vedata, camera, false);
-  EEVEE_materials_init(sldata, stl, fbl);
+  EEVEE_materials_init(sldata, vedata, stl, fbl);
   EEVEE_shadows_init(sldata);
   EEVEE_lightprobes_init(sldata, vedata);
 }
@@ -120,12 +120,18 @@ void EEVEE_cache_populate(void *vedata, Object *ob)
   bool cast_shadow = false;
 
   if (ob_visibility & OB_VISIBLE_PARTICLES) {
-    EEVEE_hair_cache_populate(vedata, sldata, ob, &cast_shadow);
+    EEVEE_particle_hair_cache_populate(vedata, sldata, ob, &cast_shadow);
   }
 
   if (DRW_object_is_renderable(ob) && (ob_visibility & OB_VISIBLE_SELF)) {
     if (ELEM(ob->type, OB_MESH, OB_CURVE, OB_SURF, OB_FONT, OB_MBALL)) {
       EEVEE_materials_cache_populate(vedata, sldata, ob, &cast_shadow);
+    }
+    else if (ob->type == OB_HAIR) {
+      EEVEE_object_hair_cache_populate(vedata, sldata, ob, &cast_shadow);
+    }
+    else if (ob->type == OB_VOLUME) {
+      EEVEE_volumes_cache_object_add(sldata, vedata, draw_ctx->scene, ob);
     }
     else if (!USE_SCENE_LIGHT(draw_ctx->v3d)) {
       /* do not add any scene light sources to the cache */
@@ -151,7 +157,8 @@ void EEVEE_cache_populate(void *vedata, Object *ob)
 static void eevee_cache_finish(void *vedata)
 {
   EEVEE_ViewLayerData *sldata = EEVEE_view_layer_data_ensure();
-  EEVEE_PrivateData *g_data = ((EEVEE_Data *)vedata)->stl->g_data;
+  EEVEE_StorageList *stl = ((EEVEE_Data *)vedata)->stl;
+  EEVEE_PrivateData *g_data = stl->g_data;
   const DRWContextState *draw_ctx = DRW_context_state_get();
   const Scene *scene_eval = DEG_get_evaluated_scene(draw_ctx->depsgraph);
 
@@ -223,7 +230,7 @@ static void eevee_draw_scene(void *vedata)
       BLI_halton_3d(primes, offset, samp, r);
       EEVEE_update_noise(psl, fbl, r);
       EEVEE_volumes_set_jitter(sldata, samp - 1);
-      EEVEE_materials_init(sldata, stl, fbl);
+      EEVEE_materials_init(sldata, vedata, stl, fbl);
     }
     /* Copy previous persmat to UBO data */
     copy_m4_m4(sldata->common_data.prev_persmat, stl->effects->prev_persmat);
@@ -267,8 +274,7 @@ static void eevee_draw_scene(void *vedata)
 
     /* Depth prepass */
     DRW_stats_group_start("Prepass");
-    DRW_draw_pass(psl->depth_pass);
-    DRW_draw_pass(psl->depth_pass_cull);
+    DRW_draw_pass(psl->depth_ps);
     DRW_stats_group_end();
 
     /* Create minmax texture */
@@ -282,9 +288,9 @@ static void eevee_draw_scene(void *vedata)
     /* Shading pass */
     DRW_stats_group_start("Shading");
     if (DRW_state_draw_background()) {
-      DRW_draw_pass(psl->background_pass);
+      DRW_draw_pass(psl->background_ps);
     }
-    EEVEE_materials_draw_opaque(sldata, psl);
+    DRW_draw_pass(psl->material_ps);
     EEVEE_subsurface_data_render(sldata, vedata);
     DRW_stats_group_end();
 
@@ -299,13 +305,15 @@ static void eevee_draw_scene(void *vedata)
 
     /* Opaque refraction */
     DRW_stats_group_start("Opaque Refraction");
-    DRW_draw_pass(psl->refract_depth_pass);
-    DRW_draw_pass(psl->refract_depth_pass_cull);
-    DRW_draw_pass(psl->refract_pass);
+    DRW_draw_pass(psl->depth_refract_ps);
+    DRW_draw_pass(psl->material_refract_ps);
     DRW_stats_group_end();
 
     /* Volumetrics Resolve Opaque */
     EEVEE_volumes_resolve(sldata, vedata);
+
+    /* Renderpasses */
+    EEVEE_renderpasses_output_accumulate(sldata, vedata, false);
 
     /* Transparent */
     /* TODO(fclem): should be its own Framebuffer.
@@ -321,8 +329,6 @@ static void eevee_draw_scene(void *vedata)
     EEVEE_draw_effects(sldata, vedata);
     DRW_stats_group_end();
 
-    EEVEE_renderpasses_output_accumulate(sldata, vedata);
-
     DRW_view_set_active(NULL);
 
     if (DRW_state_is_image_render() && (stl->effects->enabled_effects & EFFECT_SSR) &&
@@ -336,7 +342,7 @@ static void eevee_draw_scene(void *vedata)
     }
   }
 
-  if ((stl->g_data->render_passes & SCE_PASS_COMBINED) > 0) {
+  if ((stl->g_data->render_passes & EEVEE_RENDER_PASS_COMBINED) != 0) {
     /* Transfer result to default framebuffer. */
     GPU_framebuffer_bind(dfbl->default_fb);
     DRW_transform_none(stl->effects->final_tx);
@@ -364,7 +370,7 @@ static void eevee_id_object_update(void *UNUSED(vedata), Object *object)
 {
   EEVEE_LightProbeEngineData *ped = EEVEE_lightprobe_data_get(object);
   if (ped != NULL && ped->dd.recalc != 0) {
-    ped->need_update = (ped->dd.recalc & (ID_RECALC_TRANSFORM)) != 0;
+    ped->need_update = (ped->dd.recalc & ID_RECALC_TRANSFORM) != 0;
     ped->dd.recalc = 0;
   }
   EEVEE_LightEngineData *led = EEVEE_light_data_get(object);
@@ -416,9 +422,8 @@ static void eevee_render_to_image(void *vedata,
                                   const rcti *rect)
 {
   const DRWContextState *draw_ctx = DRW_context_state_get();
-  EEVEE_render_init(vedata, engine, draw_ctx->depsgraph);
 
-  if (RE_engine_test_break(engine)) {
+  if (!EEVEE_render_init(vedata, engine, draw_ctx->depsgraph)) {
     return;
   }
 
@@ -471,7 +476,7 @@ RenderEngineType DRW_engine_viewport_eevee_type = {
     NULL,
     EEVEE_ENGINE,
     N_("Eevee"),
-    RE_INTERNAL | RE_USE_PREVIEW,
+    RE_INTERNAL | RE_USE_PREVIEW | RE_USE_STEREO_VIEWPORT,
     NULL,
     &DRW_render_to_image,
     NULL,

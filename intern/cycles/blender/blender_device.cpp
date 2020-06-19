@@ -17,6 +17,8 @@
 #include "blender/blender_device.h"
 #include "blender/blender_util.h"
 
+#include "util/util_foreach.h"
+
 CCL_NAMESPACE_BEGIN
 
 enum DenoiserType {
@@ -111,12 +113,17 @@ DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scen
         device = Device::get_multi_device(used_devices, threads, background);
       }
       /* Else keep using the CPU device that was set before. */
+
+      if (!get_boolean(cpreferences, "peer_memory")) {
+        device.has_peer_memory = false;
+      }
     }
   }
 
   /* Ensure there is an OptiX device when using the OptiX denoiser. */
-  bool use_optix_denoising = DENOISER_OPTIX ==
-                             get_enum(cscene, "preview_denoising", DENOISER_NUM, DENOISER_NONE);
+  bool use_optix_denoising = get_enum(cscene, "preview_denoising", DENOISER_NUM, DENOISER_NONE) ==
+                                 DENOISER_OPTIX &&
+                             !background;
   BL::Scene::view_layers_iterator b_view_layer;
   for (b_scene.view_layers.begin(b_view_layer); b_view_layer != b_scene.view_layers.end();
        ++b_view_layer) {
@@ -134,10 +141,25 @@ DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scen
         device.multi_devices.push_back(device);
       }
 
-      /* Simply use the first available OptiX device. */
-      const DeviceInfo optix_device = optix_devices.front();
-      device.id += optix_device.id; /* Uniquely identify this special multi device. */
-      device.denoising_devices.push_back(optix_device);
+      /* Try to use the same physical devices for denoising. */
+      for (const DeviceInfo &cuda_device : device.multi_devices) {
+        if (cuda_device.type == DEVICE_CUDA) {
+          for (const DeviceInfo &optix_device : optix_devices) {
+            if (cuda_device.num == optix_device.num) {
+              device.id += optix_device.id;
+              device.denoising_devices.push_back(optix_device);
+              break;
+            }
+          }
+        }
+      }
+
+      if (device.denoising_devices.empty()) {
+        /* Simply use the first available OptiX device. */
+        const DeviceInfo optix_device = optix_devices.front();
+        device.id += optix_device.id; /* Uniquely identify this special multi device. */
+        device.denoising_devices.push_back(optix_device);
+      }
     }
   }
 

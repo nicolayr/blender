@@ -23,8 +23,8 @@
 
 #pragma once
 
-#include "intern/eval/deg_eval_runtime_backup_sequence.h"
 #include "intern/depsgraph_type.h"
+#include "intern/eval/deg_eval_runtime_backup_sequence.h"
 
 struct Scene;
 
@@ -42,8 +42,7 @@ class SequencerBackup {
 
   const Depsgraph *depsgraph;
 
-  typedef map<Sequence *, SequenceBackup> SequencesBackupMap;
-  SequencesBackupMap sequences_backup;
+  Map<Sequence *, SequenceBackup> sequences_backup;
 };
 
 }  // namespace DEG

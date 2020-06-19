@@ -51,8 +51,8 @@
 
 #include "transform.h"
 #include "transform_convert.h"
-#include "transform_snap.h"
 #include "transform_mode.h"
+#include "transform_snap.h"
 
 /* -------------------------------------------------------------------- */
 /* Transform (Edge Slide) */
@@ -320,7 +320,7 @@ static void calcEdgeSlide_mval_range(TransInfo *t,
 {
   TransDataEdgeSlideVert *sv;
   BMEditMesh *em = BKE_editmesh_from_object(tc->obedit);
-  ARegion *ar = t->ar;
+  ARegion *region = t->region;
   View3D *v3d = NULL;
   RegionView3D *rv3d = NULL;
   float projectMat[4][4];
@@ -334,8 +334,8 @@ static void calcEdgeSlide_mval_range(TransInfo *t,
 
   if (t->spacetype == SPACE_VIEW3D) {
     /* background mode support */
-    v3d = t->sa ? t->sa->spacedata.first : NULL;
-    rv3d = t->ar ? t->ar->regiondata : NULL;
+    v3d = t->area ? t->area->spacedata.first : NULL;
+    rv3d = t->region ? t->region->regiondata : NULL;
   }
 
   if (!rv3d) {
@@ -387,26 +387,26 @@ static void calcEdgeSlide_mval_range(TransInfo *t,
 
       /* This test is only relevant if object is not wire-drawn! See [#32068]. */
       bool is_visible = !use_occlude_geometry ||
-                        BMBVH_EdgeVisible(bmbvh, e, t->depsgraph, ar, v3d, tc->obedit);
+                        BMBVH_EdgeVisible(bmbvh, e, t->depsgraph, region, v3d, tc->obedit);
 
       if (!is_visible && !use_calc_direction) {
         continue;
       }
 
       if (sv->v_side[1]) {
-        ED_view3d_project_float_v3_m4(ar, sv->v_side[1]->co, sco_b, projectMat);
+        ED_view3d_project_float_v3_m4(region, sv->v_side[1]->co, sco_b, projectMat);
       }
       else {
         add_v3_v3v3(sco_b, v->co, sv->dir_side[1]);
-        ED_view3d_project_float_v3_m4(ar, sco_b, sco_b, projectMat);
+        ED_view3d_project_float_v3_m4(region, sco_b, sco_b, projectMat);
       }
 
       if (sv->v_side[0]) {
-        ED_view3d_project_float_v3_m4(ar, sv->v_side[0]->co, sco_a, projectMat);
+        ED_view3d_project_float_v3_m4(region, sv->v_side[0]->co, sco_a, projectMat);
       }
       else {
         add_v3_v3v3(sco_a, v->co, sv->dir_side[0]);
-        ED_view3d_project_float_v3_m4(ar, sco_a, sco_a, projectMat);
+        ED_view3d_project_float_v3_m4(region, sco_a, sco_a, projectMat);
       }
 
       /* global direction */
@@ -479,7 +479,7 @@ static void calcEdgeSlide_even(TransInfo *t,
   TransDataEdgeSlideVert *sv = sld->sv;
 
   if (sld->totsv > 0) {
-    ARegion *ar = t->ar;
+    ARegion *region = t->region;
     RegionView3D *rv3d = NULL;
     float projectMat[4][4];
 
@@ -491,7 +491,7 @@ static void calcEdgeSlide_even(TransInfo *t,
 
     if (t->spacetype == SPACE_VIEW3D) {
       /* background mode support */
-      rv3d = t->ar ? t->ar->regiondata : NULL;
+      rv3d = t->region ? t->region->regiondata : NULL;
     }
 
     if (!rv3d) {
@@ -506,7 +506,7 @@ static void calcEdgeSlide_even(TransInfo *t,
       /* Set length */
       sv->edge_len = len_v3v3(sv->dir_side[0], sv->dir_side[1]);
 
-      ED_view3d_project_float_v2_m4(ar, sv->v->co, v_proj, projectMat);
+      ED_view3d_project_float_v2_m4(region, sv->v->co, v_proj, projectMat);
       dist_sq = len_squared_v2v2(mval, v_proj);
       if (dist_sq < dist_min_sq) {
         dist_min_sq = dist_sq;
@@ -519,7 +519,7 @@ static void calcEdgeSlide_even(TransInfo *t,
   }
 }
 
-static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *tc)
+static EdgeSlideData *createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *tc)
 {
   BMEditMesh *em = BKE_editmesh_from_object(tc->obedit);
   BMesh *bm = em->bm;
@@ -554,8 +554,9 @@ static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *t
       }
 
       if (numsel == 0 || numsel > 2) {
+        /* Invalid edge selection. */
         MEM_freeN(sld);
-        return false; /* invalid edge selection */
+        return NULL;
       }
     }
   }
@@ -566,7 +567,7 @@ static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *t
       if (!BM_edge_is_manifold(e) && !BM_edge_is_boundary(e)) {
         /* can edges with at least once face user */
         MEM_freeN(sld);
-        return false;
+        return NULL;
       }
     }
   }
@@ -595,7 +596,7 @@ static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *t
     if (!j) {
       MEM_freeN(sld);
       MEM_freeN(sv_table);
-      return false;
+      return NULL;
     }
     sv_tot = j;
   }
@@ -851,15 +852,15 @@ static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *t
 
   /* EDBM_flag_disable_all(em, BM_ELEM_SELECT); */
 
-  BLI_assert(STACK_SIZE(sv_array) == sv_tot);
+  BLI_assert(STACK_SIZE(sv_array) == (uint)sv_tot);
 
   sld->sv = sv_array;
   sld->totsv = sv_tot;
 
   /* use for visibility checks */
   if (t->spacetype == SPACE_VIEW3D) {
-    v3d = t->sa ? t->sa->spacedata.first : NULL;
-    rv3d = t->ar ? t->ar->regiondata : NULL;
+    v3d = t->area ? t->area->spacedata.first : NULL;
+    rv3d = t->region ? t->region->regiondata : NULL;
     use_occlude_geometry = (v3d && TRANS_DATA_CONTAINER_FIRST_OK(t)->obedit->dt > OB_WIRE &&
                             !XRAY_ENABLED(v3d));
   }
@@ -870,18 +871,16 @@ static bool createEdgeSlideVerts_double_side(TransInfo *t, TransDataContainer *t
     calcEdgeSlide_even(t, tc, sld, mval);
   }
 
-  tc->custom.mode.data = sld;
-
   MEM_freeN(sv_table);
 
-  return true;
+  return sld;
 }
 
 /**
  * A simple version of #createEdgeSlideVerts_double_side
  * Which assumes the longest unselected.
  */
-static bool createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *tc)
+static EdgeSlideData *createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *tc)
 {
   BMEditMesh *em = BKE_editmesh_from_object(tc->obedit);
   BMesh *bm = em->bm;
@@ -899,8 +898,8 @@ static bool createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *t
 
   if (t->spacetype == SPACE_VIEW3D) {
     /* background mode support */
-    v3d = t->sa ? t->sa->spacedata.first : NULL;
-    rv3d = t->ar ? t->ar->regiondata : NULL;
+    v3d = t->area ? t->area->spacedata.first : NULL;
+    rv3d = t->region ? t->region->regiondata : NULL;
   }
 
   sld->curr_sv_index = 0;
@@ -933,7 +932,7 @@ static bool createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *t
 
     if (!j) {
       MEM_freeN(sld);
-      return false;
+      return NULL;
     }
 
     sv_tot = j;
@@ -1043,8 +1042,8 @@ static bool createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *t
 
   /* use for visibility checks */
   if (t->spacetype == SPACE_VIEW3D) {
-    v3d = t->sa ? t->sa->spacedata.first : NULL;
-    rv3d = t->ar ? t->ar->regiondata : NULL;
+    v3d = t->area ? t->area->spacedata.first : NULL;
+    rv3d = t->region ? t->region->regiondata : NULL;
     use_occlude_geometry = (v3d && TRANS_DATA_CONTAINER_FIRST_OK(t)->obedit->dt > OB_WIRE &&
                             !XRAY_ENABLED(v3d));
   }
@@ -1055,24 +1054,9 @@ static bool createEdgeSlideVerts_single_side(TransInfo *t, TransDataContainer *t
     calcEdgeSlide_even(t, tc, sld, mval);
   }
 
-  tc->custom.mode.data = sld;
-
   MEM_freeN(sv_table);
 
-  return true;
-}
-
-void projectEdgeSlideData(TransInfo *t, bool is_final)
-{
-  FOREACH_TRANS_DATA_CONTAINER (t, tc) {
-    EdgeSlideData *sld = tc->custom.mode.data;
-
-    if (sld == NULL) {
-      continue;
-    }
-
-    trans_mesh_customdata_correction_apply(tc, is_final);
-  }
+  return sld;
 }
 
 static void freeEdgeSlideVerts(TransInfo *UNUSED(t),
@@ -1098,21 +1082,21 @@ static eRedrawFlag handleEventEdgeSlide(struct TransInfo *t, const struct wmEven
 
     if (slp) {
       switch (event->type) {
-        case EKEY:
+        case EVT_EKEY:
           if (event->val == KM_PRESS) {
             slp->use_even = !slp->use_even;
             calcEdgeSlideCustomPoints(t);
             return TREDRAW_HARD;
           }
           break;
-        case FKEY:
+        case EVT_FKEY:
           if (event->val == KM_PRESS) {
             slp->flipped = !slp->flipped;
             calcEdgeSlideCustomPoints(t);
             return TREDRAW_HARD;
           }
           break;
-        case CKEY:
+        case EVT_CKEY:
           /* use like a modifier key */
           if (event->val == KM_PRESS) {
             t->flag ^= T_ALT_TRANSFORM;
@@ -1417,7 +1401,7 @@ static void applyEdgeSlide(TransInfo *t, const int UNUSED(mval[2]))
 
   recalcData(t);
 
-  ED_area_status_text(t->sa, str);
+  ED_area_status_text(t->area, str);
 }
 
 void initEdgeSlide_ex(
@@ -1450,12 +1434,14 @@ void initEdgeSlide_ex(
 
   if (use_double_side) {
     FOREACH_TRANS_DATA_CONTAINER (t, tc) {
-      ok |= createEdgeSlideVerts_double_side(t, tc);
-    }
-  }
-  else {
-    FOREACH_TRANS_DATA_CONTAINER (t, tc) {
-      ok |= createEdgeSlideVerts_single_side(t, tc);
+      sld = use_double_side ? createEdgeSlideVerts_double_side(t, tc) :
+                              createEdgeSlideVerts_single_side(t, tc);
+      if (sld) {
+        tc->custom.mode.data = sld;
+        tc->custom.mode.free_cb = freeEdgeSlideVerts;
+        trans_mesh_customdata_correction_init(t, tc);
+        ok = true;
+      }
     }
   }
 
@@ -1463,16 +1449,6 @@ void initEdgeSlide_ex(
     t->state = TRANS_CANCEL;
     return;
   }
-
-  FOREACH_TRANS_DATA_CONTAINER (t, tc) {
-    sld = tc->custom.mode.data;
-    if (!sld) {
-      continue;
-    }
-    tc->custom.mode.free_cb = freeEdgeSlideVerts;
-  }
-
-  trans_mesh_customdata_correction_init(t);
 
   /* set custom point first if you want value to be initialized by init */
   calcEdgeSlideCustomPoints(t);

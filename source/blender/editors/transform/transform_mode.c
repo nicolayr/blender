@@ -24,8 +24,10 @@
 #include <stdlib.h>
 
 #include "DNA_anim_types.h"
+#include "DNA_armature_types.h"
 #include "DNA_constraint_types.h"
 #include "DNA_gpencil_types.h"
+#include "DNA_windowmanager_types.h"
 
 #include "BLI_listbase.h"
 #include "BLI_math.h"
@@ -35,13 +37,14 @@
 #include "BKE_context.h"
 #include "BKE_nla.h"
 
-#include "ED_screen.h"
+#include "RNA_access.h"
 
 #include "UI_interface.h"
 
 #include "BLT_translation.h"
 
 #include "transform.h"
+#include "transform_convert.h"
 #include "transform_snap.h"
 
 /* Own include. */
@@ -57,7 +60,21 @@ bool transdata_check_local_center(TransInfo *t, short around)
            (t->options & (CTX_MOVIECLIP | CTX_MASK | CTX_PAINT_CURVE))));
 }
 
-/* ************************** TRANSFORM LOCKS **************************** */
+/* Informs if the mode can be switched during modal. */
+bool transform_mode_is_changeable(const int mode)
+{
+  return ELEM(mode,
+              TFM_ROTATION,
+              TFM_RESIZE,
+              TFM_TRACKBALL,
+              TFM_TRANSLATION,
+              TFM_EDGE_SLIDE,
+              TFM_VERT_SLIDE);
+}
+
+/* -------------------------------------------------------------------- */
+/** \name Transform Locks
+ * \{ */
 
 void protectedTransBits(short protectflag, float vec[3])
 {
@@ -207,7 +224,11 @@ static void protectedSizeBits(short protectflag, float size[3])
   }
 }
 
-/* ******************* TRANSFORM LIMITS ********************** */
+/** \} */
+
+/* -------------------------------------------------------------------- */
+/** \name Transform Limits
+ * \{ */
 
 void constraintTransLim(TransInfo *t, TransData *td)
 {
@@ -484,9 +505,9 @@ static void constraintSizeLim(TransInfo *t, TransData *td)
 }
 
 /* -------------------------------------------------------------------- */
-/* Transform (Rotaion Utils) */
+/* Transform (Rotation Utils) */
 
-/** \name Transform Rotaion Utils
+/** \name Transform Rotation Utils
  * \{ */
 /* Used by Transform Rotation and Transform Normal Rotation */
 void headerRotation(TransInfo *t, char str[UI_MAX_DRAW_STR], float final)
@@ -519,7 +540,7 @@ void headerRotation(TransInfo *t, char str[UI_MAX_DRAW_STR], float final)
 void postInputRotation(TransInfo *t, float values[3])
 {
   float axis_final[3];
-  copy_v3_v3(axis_final, t->orient_matrix[t->orient_axis]);
+  copy_v3_v3(axis_final, t->spacemtx[t->orient_axis]);
   if ((t->con.mode & CON_APPLY) && t->con.applyRot) {
     t->con.applyRot(t, NULL, NULL, axis_final, values);
   }
@@ -915,7 +936,7 @@ void ElementResize(TransInfo *t, TransDataContainer *tc, TransData *td, float ma
   if (td->ext && td->ext->size) {
     float fsize[3];
 
-    if ((t->options & CTX_SCULPT) || t->flag & (T_OBJECT | T_TEXTURE | T_POSE)) {
+    if (ELEM(t->data_type, TC_SCULPT, TC_OBJECT, TC_OBJECT_TEXSPACE, TC_POSE)) {
       float obsizemat[3][3];
       /* Reorient the size mat to fit the oriented object. */
       mul_m3_m3m3(obsizemat, tmat, td->axismtx);
@@ -1018,21 +1039,21 @@ short getAnimEdit_SnapMode(TransInfo *t)
   short autosnap = SACTSNAP_OFF;
 
   if (t->spacetype == SPACE_ACTION) {
-    SpaceAction *saction = (SpaceAction *)t->sa->spacedata.first;
+    SpaceAction *saction = (SpaceAction *)t->area->spacedata.first;
 
     if (saction) {
       autosnap = saction->autosnap;
     }
   }
   else if (t->spacetype == SPACE_GRAPH) {
-    SpaceGraph *sipo = (SpaceGraph *)t->sa->spacedata.first;
+    SpaceGraph *sipo = (SpaceGraph *)t->area->spacedata.first;
 
     if (sipo) {
       autosnap = sipo->autosnap;
     }
   }
   else if (t->spacetype == SPACE_NLA) {
-    SpaceNla *snla = (SpaceNla *)t->sa->spacedata.first;
+    SpaceNla *snla = (SpaceNla *)t->area->spacedata.first;
 
     if (snla) {
       autosnap = snla->autosnap;
@@ -1097,4 +1118,158 @@ void doAnimEdit_SnapFrame(
     td2d->h2[0] = td2d->ih2[0] + *td->val - td->ival;
   }
 }
+/** \} */
+
+/* -------------------------------------------------------------------- */
+/** \name Transform Mode Initialization
+ * \{ */
+
+void transform_mode_init(TransInfo *t, wmOperator *op, const int mode)
+{
+  t->mode = mode;
+
+  switch (mode) {
+    case TFM_TRANSLATION:
+      initTranslation(t);
+      break;
+    case TFM_ROTATION:
+      initRotation(t);
+      break;
+    case TFM_RESIZE:
+      initResize(t);
+      break;
+    case TFM_SKIN_RESIZE:
+      initSkinResize(t);
+      break;
+    case TFM_TOSPHERE:
+      initToSphere(t);
+      break;
+    case TFM_SHEAR:
+      initShear(t);
+      break;
+    case TFM_BEND:
+      initBend(t);
+      break;
+    case TFM_SHRINKFATTEN:
+      initShrinkFatten(t);
+      break;
+    case TFM_TILT:
+      initTilt(t);
+      break;
+    case TFM_CURVE_SHRINKFATTEN:
+      initCurveShrinkFatten(t);
+      break;
+    case TFM_MASK_SHRINKFATTEN:
+      initMaskShrinkFatten(t);
+      break;
+    case TFM_GPENCIL_SHRINKFATTEN:
+      initGPShrinkFatten(t);
+      break;
+    case TFM_TRACKBALL:
+      initTrackball(t);
+      break;
+    case TFM_PUSHPULL:
+      initPushPull(t);
+      break;
+    case TFM_CREASE:
+      initCrease(t);
+      break;
+    case TFM_BONESIZE: { /* used for both B-Bone width (bonesize) as for deform-dist (envelope) */
+      /* Note: we have to pick one, use the active object. */
+      TransDataContainer *tc = TRANS_DATA_CONTAINER_FIRST_OK(t);
+      bArmature *arm = tc->poseobj->data;
+      if (arm->drawtype == ARM_ENVELOPE) {
+        initBoneEnvelope(t);
+        t->mode = TFM_BONE_ENVELOPE_DIST;
+      }
+      else {
+        initBoneSize(t);
+      }
+      break;
+    }
+    case TFM_BONE_ENVELOPE:
+      initBoneEnvelope(t);
+      break;
+    case TFM_BONE_ENVELOPE_DIST:
+      initBoneEnvelope(t);
+      t->mode = TFM_BONE_ENVELOPE_DIST;
+      break;
+    case TFM_EDGE_SLIDE:
+    case TFM_VERT_SLIDE: {
+      const bool use_even = (op ? RNA_boolean_get(op->ptr, "use_even") : false);
+      const bool flipped = (op ? RNA_boolean_get(op->ptr, "flipped") : false);
+      const bool use_clamp = (op ? RNA_boolean_get(op->ptr, "use_clamp") : true);
+      if (mode == TFM_EDGE_SLIDE) {
+        const bool use_double_side = (op ? !RNA_boolean_get(op->ptr, "single_side") : true);
+        initEdgeSlide_ex(t, use_double_side, use_even, flipped, use_clamp);
+      }
+      else {
+        initVertSlide_ex(t, use_even, flipped, use_clamp);
+      }
+      break;
+    }
+    case TFM_BONE_ROLL:
+      initBoneRoll(t);
+      break;
+    case TFM_TIME_TRANSLATE:
+      initTimeTranslate(t);
+      break;
+    case TFM_TIME_SLIDE:
+      initTimeSlide(t);
+      break;
+    case TFM_TIME_SCALE:
+      initTimeScale(t);
+      break;
+    case TFM_TIME_DUPLICATE:
+      /* same as TFM_TIME_EXTEND, but we need the mode info for later
+       * so that duplicate-culling will work properly
+       */
+      if (ELEM(t->spacetype, SPACE_GRAPH, SPACE_NLA)) {
+        initTranslation(t);
+      }
+      else {
+        initTimeTranslate(t);
+      }
+      break;
+    case TFM_TIME_EXTEND:
+      /* now that transdata has been made, do like for TFM_TIME_TRANSLATE (for most Animation
+       * Editors because they have only 1D transforms for time values) or TFM_TRANSLATION
+       * (for Graph/NLA Editors only since they uses 'standard' transforms to get 2D movement)
+       * depending on which editor this was called from
+       */
+      if (ELEM(t->spacetype, SPACE_GRAPH, SPACE_NLA)) {
+        initTranslation(t);
+      }
+      else {
+        initTimeTranslate(t);
+      }
+      break;
+    case TFM_BAKE_TIME:
+      initBakeTime(t);
+      break;
+    case TFM_MIRROR:
+      initMirror(t);
+      break;
+    case TFM_BWEIGHT:
+      initBevelWeight(t);
+      break;
+    case TFM_ALIGN:
+      initAlign(t);
+      break;
+    case TFM_SEQ_SLIDE:
+      initSeqSlide(t);
+      break;
+    case TFM_NORMAL_ROTATION:
+      initNormalRotation(t);
+      break;
+    case TFM_GPENCIL_OPACITY:
+      initGPOpacity(t);
+      break;
+  }
+
+  /* TODO(germano): Some of these operations change the `t->mode`.
+   * This can be bad for Redo.
+   * BLI_assert(t->mode == mode); */
+}
+
 /** \} */

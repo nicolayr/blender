@@ -71,6 +71,7 @@ extern StructRNA RNA_BackgroundImage;
 extern StructRNA RNA_BevelModifier;
 extern StructRNA RNA_BezierSplinePoint;
 extern StructRNA RNA_BlendData;
+extern StructRNA RNA_BlendDataLibraries;
 extern StructRNA RNA_BlendTexture;
 extern StructRNA RNA_BlenderRNA;
 extern StructRNA RNA_BoidRule;
@@ -259,6 +260,7 @@ extern StructRNA RNA_FreestyleLineStyle;
 extern StructRNA RNA_FreestyleModuleSettings;
 extern StructRNA RNA_FreestyleSettings;
 extern StructRNA RNA_Function;
+extern StructRNA RNA_FunctionNode;
 extern StructRNA RNA_GPencilFrame;
 extern StructRNA RNA_GPencilInterpolateSettings;
 extern StructRNA RNA_GPencilLayer;
@@ -274,6 +276,7 @@ extern StructRNA RNA_GizmoProperties;
 extern StructRNA RNA_GlowSequence;
 extern StructRNA RNA_GpencilModifier;
 extern StructRNA RNA_GreasePencil;
+extern StructRNA RNA_Hair;
 extern StructRNA RNA_Header;
 extern StructRNA RNA_Histogram;
 extern StructRNA RNA_HookGpencilModifier;
@@ -459,6 +462,7 @@ extern StructRNA RNA_ParticleSystemModifier;
 extern StructRNA RNA_ParticleTarget;
 extern StructRNA RNA_PivotConstraint;
 extern StructRNA RNA_PointCache;
+extern StructRNA RNA_PointCloud;
 extern StructRNA RNA_PointLight;
 extern StructRNA RNA_PointerProperty;
 extern StructRNA RNA_Pose;
@@ -546,6 +550,9 @@ extern StructRNA RNA_ShrinkwrapConstraint;
 extern StructRNA RNA_ShrinkwrapModifier;
 extern StructRNA RNA_SimpleDeformModifier;
 extern StructRNA RNA_SimplifyGpencilModifier;
+extern StructRNA RNA_Simulation;
+extern StructRNA RNA_SimulationNode;
+extern StructRNA RNA_SimulationNodeTree;
 extern StructRNA RNA_SkinModifier;
 extern StructRNA RNA_SmoothGpencilModifier;
 extern StructRNA RNA_SmoothModifier;
@@ -666,6 +673,7 @@ extern StructRNA RNA_UVWarpModifier;
 extern StructRNA RNA_UnitSettings;
 extern StructRNA RNA_UnknownType;
 extern StructRNA RNA_UserSolidLight;
+extern StructRNA RNA_VertexcolorGpencilModifier;
 extern StructRNA RNA_VectorFont;
 extern StructRNA RNA_VertexGroup;
 extern StructRNA RNA_VertexGroupElement;
@@ -677,6 +685,8 @@ extern StructRNA RNA_View3DCursor;
 extern StructRNA RNA_View3DOverlay;
 extern StructRNA RNA_View3DShading;
 extern StructRNA RNA_ViewLayer;
+extern StructRNA RNA_ViewLayerEEVEE;
+extern StructRNA RNA_Volume;
 extern StructRNA RNA_VoronoiTexture;
 extern StructRNA RNA_WalkNavigation;
 extern StructRNA RNA_WarpModifier;
@@ -692,6 +702,8 @@ extern StructRNA RNA_WorkSpace;
 extern StructRNA RNA_World;
 extern StructRNA RNA_WorldLighting;
 extern StructRNA RNA_WorldMistSettings;
+extern StructRNA RNA_XrSessionSettings;
+extern StructRNA RNA_XrSessionState;
 extern StructRNA RNA_uiPopover;
 extern StructRNA RNA_wmOwnerIDs;
 
@@ -922,10 +934,6 @@ void RNA_property_update_main(struct Main *bmain,
                               PointerRNA *ptr,
                               PropertyRNA *prop);
 bool RNA_property_update_check(struct PropertyRNA *prop);
-
-void RNA_property_update_cache_add(PointerRNA *ptr, PropertyRNA *prop);
-void RNA_property_update_cache_flush(struct Main *bmain, struct Scene *scene);
-void RNA_property_update_cache_free(void);
 
 /* Property Data */
 
@@ -1457,6 +1465,7 @@ bool RNA_struct_override_matches(struct Main *bmain,
                                  struct PointerRNA *ptr_local,
                                  struct PointerRNA *ptr_reference,
                                  const char *root_path,
+                                 const size_t root_path_len,
                                  struct IDOverrideLibrary *override,
                                  const eRNAOverrideMatch flags,
                                  eRNAOverrideMatchResult *r_report_flags);

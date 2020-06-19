@@ -176,6 +176,7 @@ typedef int (*RNAPropOverrideDiff)(struct Main *bmain,
                                    const int mode,
                                    struct IDOverrideLibrary *override,
                                    const char *rna_path,
+                                   const size_t rna_path_len,
                                    const int flags,
                                    bool *r_override_changed);
 
@@ -427,6 +428,7 @@ typedef struct EnumPropertyRNA {
   int totitem;
 
   int defaultvalue;
+  const char *native_enum_type;
 } EnumPropertyRNA;
 
 typedef struct PointerPropertyRNA {

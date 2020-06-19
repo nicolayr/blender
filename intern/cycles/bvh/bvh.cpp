@@ -229,8 +229,6 @@ void BVH::refit_primitives(int start, int end, BoundBox &bbox, uint &visibility)
 
         curve.bounds_grow(k, &hair->curve_keys[0], &hair->curve_radius[0], bbox);
 
-        visibility |= PATH_RAY_CURVE;
-
         /* Motion curves. */
         if (hair->use_motion_blur) {
           Attribute *attr = hair->attributes.find(ATTR_STD_MOTION_VERTEX_POSITION);
@@ -327,9 +325,6 @@ void BVH::pack_primitives()
         pack.prim_tri_index[i] = -1;
       }
       pack.prim_visibility[i] = ob->visibility_for_tracing();
-      if (pack.prim_type[i] & PRIMITIVE_ALL_CURVE) {
-        pack.prim_visibility[i] |= PATH_RAY_CURVE;
-      }
     }
     else {
       pack.prim_tri_index[i] = -1;
@@ -535,8 +530,9 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
 
         /* Modify offsets into arrays */
         int4 data = bvh_nodes[i + nsize_bbox];
-        int4 data1 = bvh_nodes[i + nsize_bbox - 1];
+
         if (use_obvh) {
+          int4 data1 = bvh_nodes[i + nsize_bbox - 1];
           data.z += (data.z < 0) ? -noffset_leaf : noffset;
           data.w += (data.w < 0) ? -noffset_leaf : noffset;
           data.x += (data.x < 0) ? -noffset_leaf : noffset;
@@ -545,6 +541,8 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
           data1.w += (data1.w < 0) ? -noffset_leaf : noffset;
           data1.x += (data1.x < 0) ? -noffset_leaf : noffset;
           data1.y += (data1.y < 0) ? -noffset_leaf : noffset;
+          pack_nodes[pack_nodes_offset + nsize_bbox] = data;
+          pack_nodes[pack_nodes_offset + nsize_bbox - 1] = data1;
         }
         else {
           data.z += (data.z < 0) ? -noffset_leaf : noffset;
@@ -553,10 +551,7 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
             data.x += (data.x < 0) ? -noffset_leaf : noffset;
             data.y += (data.y < 0) ? -noffset_leaf : noffset;
           }
-        }
-        pack_nodes[pack_nodes_offset + nsize_bbox] = data;
-        if (use_obvh) {
-          pack_nodes[pack_nodes_offset + nsize_bbox - 1] = data1;
+          pack_nodes[pack_nodes_offset + nsize_bbox] = data;
         }
 
         /* Usually this copies nothing, but we better

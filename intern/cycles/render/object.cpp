@@ -14,23 +14,24 @@
  * limitations under the License.
  */
 
-#include "render/camera.h"
+#include "render/object.h"
 #include "device/device.h"
+#include "render/camera.h"
+#include "render/curves.h"
 #include "render/hair.h"
+#include "render/integrator.h"
 #include "render/light.h"
 #include "render/mesh.h"
-#include "render/curves.h"
-#include "render/object.h"
 #include "render/particles.h"
 #include "render/scene.h"
 
 #include "util/util_foreach.h"
 #include "util/util_logging.h"
 #include "util/util_map.h"
+#include "util/util_murmurhash.h"
 #include "util/util_progress.h"
 #include "util/util_set.h"
 #include "util/util_vector.h"
-#include "util/util_murmurhash.h"
 
 #include "subd/subd_patch_table.h"
 
@@ -65,6 +66,7 @@ struct UpdateObjectTransformState {
   KernelObject *objects;
   Transform *object_motion_pass;
   DecomposedTransform *object_motion;
+  float *object_volume_step;
 
   /* Flags which will be synchronized to Integrator. */
   bool have_motion;
@@ -99,6 +101,7 @@ NODE_DEFINE(Object)
   SOCKET_POINT(dupli_generated, "Dupli Generated", make_float3(0.0f, 0.0f, 0.0f));
   SOCKET_POINT2(dupli_uv, "Dupli UV", make_float2(0.0f, 0.0f));
   SOCKET_TRANSFORM_ARRAY(motion, "Motion", array<Transform>());
+  SOCKET_FLOAT(shadow_terminator_offset, "Terminator Offset", 0.0f);
 
   SOCKET_BOOLEAN(is_shadow_catcher, "Shadow Catcher", false);
 
@@ -266,6 +269,82 @@ uint Object::visibility_for_tracing() const
   return trace_visibility;
 }
 
+float Object::compute_volume_step_size() const
+{
+  if (geometry->type != Geometry::MESH) {
+    return FLT_MAX;
+  }
+
+  Mesh *mesh = static_cast<Mesh *>(geometry);
+
+  if (!mesh->has_volume) {
+    return FLT_MAX;
+  }
+
+  /* Compute step rate from shaders. */
+  float step_rate = FLT_MAX;
+
+  foreach (Shader *shader, mesh->used_shaders) {
+    if (shader->has_volume) {
+      if ((shader->heterogeneous_volume && shader->has_volume_spatial_varying) ||
+          (shader->has_volume_attribute_dependency)) {
+        step_rate = fminf(shader->volume_step_rate, step_rate);
+      }
+    }
+  }
+
+  if (step_rate == FLT_MAX) {
+    return FLT_MAX;
+  }
+
+  /* Compute step size from voxel grids. */
+  float step_size = FLT_MAX;
+
+  foreach (Attribute &attr, mesh->attributes.attributes) {
+    if (attr.element == ATTR_ELEMENT_VOXEL) {
+      ImageHandle &handle = attr.data_voxel();
+      const ImageMetaData &metadata = handle.metadata();
+      if (metadata.width == 0 || metadata.height == 0 || metadata.depth == 0) {
+        continue;
+      }
+
+      /* User specified step size. */
+      float voxel_step_size = mesh->volume_step_size;
+
+      if (voxel_step_size == 0.0f) {
+        /* Auto detect step size. */
+        float3 size = make_float3(
+            1.0f / metadata.width, 1.0f / metadata.height, 1.0f / metadata.depth);
+
+        /* Step size is transformed from voxel to world space. */
+        Transform voxel_tfm = tfm;
+        if (metadata.use_transform_3d) {
+          voxel_tfm = tfm * transform_inverse(metadata.transform_3d);
+        }
+        voxel_step_size = min3(fabs(transform_direction(&voxel_tfm, size)));
+      }
+      else if (mesh->volume_object_space) {
+        /* User specified step size in object space. */
+        float3 size = make_float3(voxel_step_size, voxel_step_size, voxel_step_size);
+        voxel_step_size = min3(fabs(transform_direction(&tfm, size)));
+      }
+
+      if (voxel_step_size > 0.0f) {
+        step_size = fminf(voxel_step_size, step_size);
+      }
+    }
+  }
+
+  if (step_size == FLT_MAX) {
+    /* Fall back to 1/10th of bounds for procedural volumes. */
+    step_size = 0.1f * average(bounds.size());
+  }
+
+  step_size *= step_rate;
+
+  return step_size;
+}
+
 int Object::get_device_index() const
 {
   return index;
@@ -291,12 +370,23 @@ static float object_surface_area(UpdateObjectTransformState *state,
     return 0.0f;
   }
 
+  Mesh *mesh = static_cast<Mesh *>(geom);
+  if (mesh->has_volume) {
+    /* Volume density automatically adjust to object scale. */
+    if (mesh->volume_object_space) {
+      const float3 unit = normalize(make_float3(1.0f, 1.0f, 1.0f));
+      return 1.0f / len(transform_direction(&tfm, unit));
+    }
+    else {
+      return 1.0f;
+    }
+  }
+
   /* Compute surface area. for uniform scale we can do avoid the many
    * transform calls and share computation for instances.
    *
    * TODO(brecht): Correct for displacement, and move to a better place.
    */
-  Mesh *mesh = static_cast<Mesh *>(geom);
   float surface_area = 0.0f;
   float uniform_scale;
   if (transform_uniform_scale(tfm, uniform_scale)) {
@@ -445,12 +535,14 @@ void ObjectManager::device_update_object_transform(UpdateObjectTransformState *s
   uint32_t hash_asset = util_murmur_hash3(ob->asset_name.c_str(), ob->asset_name.length(), 0);
   kobject.cryptomatte_object = util_hash_to_float(hash_name);
   kobject.cryptomatte_asset = util_hash_to_float(hash_asset);
+  kobject.shadow_terminator_offset = 1.0f / (1.0f - 0.5f * ob->shadow_terminator_offset);
 
   /* Object flag. */
   if (ob->use_holdout) {
     flag |= SD_OBJECT_HOLDOUT_MASK;
   }
   state->object_flag[ob->index] = flag;
+  state->object_volume_step[ob->index] = FLT_MAX;
 
   /* Have curves. */
   if (geom->type == Geometry::HAIR) {
@@ -504,6 +596,7 @@ void ObjectManager::device_update_transforms(DeviceScene *dscene, Scene *scene, 
 
   state.objects = dscene->objects.alloc(scene->objects.size());
   state.object_flag = dscene->object_flag.alloc(scene->objects.size());
+  state.object_volume_step = dscene->object_volume_step.alloc(scene->objects.size());
   state.object_motion = NULL;
   state.object_motion_pass = NULL;
 
@@ -624,6 +717,7 @@ void ObjectManager::device_update_flags(
 
   /* Object info flag. */
   uint *object_flag = dscene->object_flag.data();
+  float *object_volume_step = dscene->object_volume_step.data();
 
   /* Object volume intersection. */
   vector<Object *> volume_objects;
@@ -634,6 +728,10 @@ void ObjectManager::device_update_flags(
         volume_objects.push_back(object);
       }
       has_volume_objects = true;
+      object_volume_step[object->index] = object->compute_volume_step_size();
+    }
+    else {
+      object_volume_step[object->index] = FLT_MAX;
     }
   }
 
@@ -651,6 +749,7 @@ void ObjectManager::device_update_flags(
     else {
       object_flag[object->index] &= ~(SD_OBJECT_HAS_VOLUME | SD_OBJECT_HAS_VOLUME_ATTRIBUTES);
     }
+
     if (object->is_shadow_catcher) {
       object_flag[object->index] |= SD_OBJECT_SHADOW_CATCHER;
     }
@@ -679,6 +778,7 @@ void ObjectManager::device_update_flags(
 
   /* Copy object flag. */
   dscene->object_flag.copy_to_device();
+  dscene->object_volume_step.copy_to_device();
 }
 
 void ObjectManager::device_update_mesh_offsets(Device *, DeviceScene *dscene, Scene *scene)
@@ -725,6 +825,7 @@ void ObjectManager::device_free(Device *, DeviceScene *dscene)
   dscene->object_motion_pass.free();
   dscene->object_motion.free();
   dscene->object_flag.free();
+  dscene->object_volume_step.free();
 }
 
 void ObjectManager::apply_static_transforms(DeviceScene *dscene, Scene *scene, Progress &progress)

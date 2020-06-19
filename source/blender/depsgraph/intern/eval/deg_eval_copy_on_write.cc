@@ -35,13 +35,14 @@
 
 #include <cstring>
 
-#include "BLI_utildefines.h"
 #include "BLI_listbase.h"
-#include "BLI_threads.h"
 #include "BLI_string.h"
+#include "BLI_threads.h"
+#include "BLI_utildefines.h"
 
 #include "BKE_curve.h"
 #include "BKE_global.h"
+#include "BKE_gpencil.h"
 #include "BKE_idprop.h"
 #include "BKE_layer.h"
 #include "BKE_lib_id.h"
@@ -52,26 +53,26 @@
 
 #include "MEM_guardedalloc.h"
 
-extern "C" {
 #include "DNA_ID.h"
 #include "DNA_anim_types.h"
 #include "DNA_armature_types.h"
 #include "DNA_mesh_types.h"
 #include "DNA_modifier_types.h"
-#include "DNA_scene_types.h"
-#include "DNA_sequence_types.h"
-#include "DNA_sound_types.h"
 #include "DNA_object_types.h"
 #include "DNA_particle_types.h"
 #include "DNA_rigidbody_types.h"
+#include "DNA_scene_types.h"
+#include "DNA_sequence_types.h"
+#include "DNA_simulation_types.h"
+#include "DNA_sound_types.h"
 
 #include "DRW_engine.h"
 
 #ifdef NESTED_ID_NASTY_WORKAROUND
 #  include "DNA_curve_types.h"
 #  include "DNA_key_types.h"
-#  include "DNA_light_types.h"
 #  include "DNA_lattice_types.h"
+#  include "DNA_light_types.h"
 #  include "DNA_linestyle_types.h"
 #  include "DNA_material_types.h"
 #  include "DNA_meta_types.h"
@@ -81,6 +82,7 @@ extern "C" {
 #endif
 
 #include "BKE_action.h"
+#include "BKE_anim_data.h"
 #include "BKE_animsys.h"
 #include "BKE_armature.h"
 #include "BKE_editmesh.h"
@@ -90,11 +92,10 @@ extern "C" {
 #include "BKE_pointcache.h"
 #include "BKE_sequencer.h"
 #include "BKE_sound.h"
-}
 
-#include "intern/depsgraph.h"
 #include "intern/builder/deg_builder.h"
 #include "intern/builder/deg_builder_nodes.h"
+#include "intern/depsgraph.h"
 #include "intern/eval/deg_eval_runtime_backup.h"
 #include "intern/node/deg_node.h"
 #include "intern/node/deg_node_id.h"
@@ -709,6 +710,13 @@ void update_modifiers_orig_pointers(const Object *object_orig, Object *object_co
       &object_orig->modifiers, &object_cow->modifiers, &ModifierData::orig_modifier_data);
 }
 
+void update_simulation_states_orig_pointers(const Simulation *simulation_orig,
+                                            Simulation *simulation_cow)
+{
+  update_list_orig_pointers(
+      &simulation_orig->states, &simulation_cow->states, &SimulationState::orig_state);
+}
+
 void update_nla_strips_orig_pointers(const ListBase *strips_orig, ListBase *strips_cow)
 {
   NlaStrip *strip_orig = reinterpret_cast<NlaStrip *>(strips_orig->first);
@@ -781,9 +789,7 @@ void update_id_after_copy(const Depsgraph *depsgraph,
       const Object *object_orig = (const Object *)id_orig;
       object_cow->mode = object_orig->mode;
       object_cow->sculpt = object_orig->sculpt;
-      if (object_cow->type == OB_MESH) {
-        object_cow->runtime.mesh_orig = (Mesh *)object_cow->data;
-      }
+      object_cow->runtime.data_orig = (ID *)object_cow->data;
       if (object_cow->type == OB_ARMATURE) {
         const bArmature *armature_orig = (bArmature *)object_orig->data;
         bArmature *armature_cow = (bArmature *)object_cow->data;
@@ -792,6 +798,9 @@ void update_id_after_copy(const Depsgraph *depsgraph,
           update_pose_orig_pointers(object_orig->pose, object_cow->pose);
         }
         BKE_pose_pchan_index_rebuild(object_cow->pose);
+      }
+      if (object_cow->type == OB_GPENCIL) {
+        BKE_gpencil_update_orig_pointers(object_orig, object_cow);
       }
       update_particles_after_copy(depsgraph, object_orig, object_cow);
       update_modifiers_orig_pointers(object_orig, object_cow);
@@ -802,9 +811,15 @@ void update_id_after_copy(const Depsgraph *depsgraph,
       Scene *scene_cow = (Scene *)id_cow;
       const Scene *scene_orig = (const Scene *)id_orig;
       scene_cow->toolsettings = scene_orig->toolsettings;
-      scene_cow->eevee.light_cache = scene_orig->eevee.light_cache;
+      scene_cow->eevee.light_cache_data = scene_orig->eevee.light_cache_data;
       scene_setup_view_layers_after_remap(depsgraph, id_node, reinterpret_cast<Scene *>(id_cow));
       update_scene_orig_pointers(scene_orig, scene_cow);
+      break;
+    }
+    case ID_SIM: {
+      Simulation *simulation_cow = (Simulation *)id_cow;
+      const Simulation *simulation_orig = (const Simulation *)id_orig;
+      update_simulation_states_orig_pointers(simulation_orig, simulation_cow);
       break;
     }
     default:
@@ -912,8 +927,11 @@ ID *deg_expand_copy_on_write_datablock(const Depsgraph *depsgraph,
   user_data.depsgraph = depsgraph;
   user_data.node_builder = node_builder;
   user_data.create_placeholders = create_placeholders;
-  BKE_library_foreach_ID_link(
-      nullptr, id_cow, foreach_libblock_remap_callback, (void *)&user_data, IDWALK_NOP);
+  BKE_library_foreach_ID_link(nullptr,
+                              id_cow,
+                              foreach_libblock_remap_callback,
+                              (void *)&user_data,
+                              IDWALK_IGNORE_EMBEDDED_ID);
   /* Correct or tweak some pointers which are not taken care by foreach
    * from above. */
   update_id_after_copy(depsgraph, id_node, id_orig, id_cow);
@@ -998,7 +1016,7 @@ void discard_scene_pointers(ID *id_cow)
 {
   Scene *scene_cow = (Scene *)id_cow;
   scene_cow->toolsettings = nullptr;
-  scene_cow->eevee.light_cache = nullptr;
+  scene_cow->eevee.light_cache_data = nullptr;
 }
 
 /* nullptr-ify all edit mode pointers which points to data from
@@ -1111,6 +1129,11 @@ bool deg_copy_on_write_is_expanded(const ID *id_cow)
 bool deg_copy_on_write_is_needed(const ID *id_orig)
 {
   const ID_Type id_type = GS(id_orig->name);
+  return deg_copy_on_write_is_needed(id_type);
+}
+
+bool deg_copy_on_write_is_needed(const ID_Type id_type)
+{
   return ID_TYPE_IS_COW(id_type);
 }
 

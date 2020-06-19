@@ -14,25 +14,25 @@
  * limitations under the License.
  */
 
+#include "render/camera.h"
 #include "render/colorspace.h"
 #include "render/mesh.h"
 #include "render/object.h"
 #include "render/scene.h"
-#include "render/camera.h"
 
-#include "blender/blender_sync.h"
 #include "blender/blender_session.h"
+#include "blender/blender_sync.h"
 #include "blender/blender_util.h"
 
 #include "subd/subd_patch.h"
 #include "subd/subd_split.h"
 
 #include "util/util_algorithm.h"
+#include "util/util_disjoint_set.h"
 #include "util/util_foreach.h"
 #include "util/util_hash.h"
 #include "util/util_logging.h"
 #include "util/util_math.h"
-#include "util/util_disjoint_set.h"
 
 #include "mikktspace.h"
 
@@ -941,7 +941,10 @@ static void sync_mesh_fluid_motion(BL::Object &b_ob, Scene *scene, Mesh *mesh)
   }
 }
 
-void BlenderSync::sync_mesh(BL::Depsgraph b_depsgraph, BL::Object b_ob, Mesh *mesh)
+void BlenderSync::sync_mesh(BL::Depsgraph b_depsgraph,
+                            BL::Object b_ob,
+                            Mesh *mesh,
+                            const vector<Shader *> &used_shaders)
 {
   array<int> oldtriangles;
   array<Mesh::SubdFace> oldsubd_faces;
@@ -949,6 +952,9 @@ void BlenderSync::sync_mesh(BL::Depsgraph b_depsgraph, BL::Object b_ob, Mesh *me
   oldtriangles.steal_data(mesh->triangles);
   oldsubd_faces.steal_data(mesh->subd_faces);
   oldsubd_face_corners.steal_data(mesh->subd_face_corners);
+
+  mesh->clear();
+  mesh->used_shaders = used_shaders;
 
   mesh->subdivision_type = Mesh::SUBDIVISION_NONE;
 

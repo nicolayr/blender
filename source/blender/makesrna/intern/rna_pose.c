@@ -80,16 +80,16 @@ const EnumPropertyItem rna_enum_color_sets_items[] = {
 
 #  include "MEM_guardedalloc.h"
 
-#  include "BKE_context.h"
 #  include "BKE_constraint.h"
+#  include "BKE_context.h"
 #  include "BKE_global.h"
 #  include "BKE_idprop.h"
 
 #  include "DEG_depsgraph.h"
 #  include "DEG_depsgraph_build.h"
 
-#  include "ED_object.h"
 #  include "ED_armature.h"
+#  include "ED_object.h"
 
 #  include "WM_api.h"
 
@@ -293,6 +293,18 @@ static void rna_PoseChannel_name_set(PointerRNA *ptr, const char *value)
   BLI_assert(BKE_id_is_in_global_main(&ob->id));
   BLI_assert(BKE_id_is_in_global_main(ob->data));
   ED_armature_bone_rename(G_MAIN, ob->data, oldname, newname);
+}
+
+/* See rna_Bone_update_renamed() */
+static void rna_PoseChannel_name_update(Main *UNUSED(bmain), Scene *UNUSED(scene), PointerRNA *ptr)
+{
+  ID *id = ptr->owner_id;
+
+  /* redraw view */
+  WM_main_add_notifier(NC_GEOM | ND_DATA, id);
+
+  /* update animation channels */
+  WM_main_add_notifier(NC_ANIMATION | ND_ANIMCHAN, id);
 }
 
 static PointerRNA rna_PoseChannel_bone_get(PointerRNA *ptr)
@@ -996,6 +1008,7 @@ static void rna_def_pose_channel(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Name", "");
   RNA_def_property_editable_func(prop, "rna_PoseChannel_proxy_editable");
   RNA_def_struct_name_property(srna, prop);
+  RNA_def_property_update(prop, 0, "rna_PoseChannel_name_update");
 
   /* Baked Bone Path cache data */
   rna_def_motionpath_common(srna);

@@ -34,7 +34,11 @@
 
 #include "BLI_blenlib.h"
 
+#include "BLT_translation.h"
+
+#include "BKE_idtype.h"
 #include "BKE_lib_id.h"
+#include "BKE_lib_query.h"
 #include "BKE_library.h"
 #include "BKE_main.h"
 #include "BKE_packedFile.h"
@@ -42,12 +46,36 @@
 /* Unused currently. */
 // static CLG_LogRef LOG = {.identifier = "bke.library"};
 
-void BKE_library_free(Library *lib)
+static void library_free_data(ID *id)
 {
-  if (lib->packedfile) {
-    BKE_packedfile_free(lib->packedfile);
+  Library *library = (Library *)id;
+  if (library->packedfile) {
+    BKE_packedfile_free(library->packedfile);
   }
 }
+
+static void library_foreach_id(ID *id, LibraryForeachIDData *data)
+{
+  Library *lib = (Library *)id;
+  BKE_LIB_FOREACHID_PROCESS(data, lib->parent, IDWALK_CB_NEVER_SELF);
+}
+
+IDTypeInfo IDType_ID_LI = {
+    .id_code = ID_LI,
+    .id_filter = 0,
+    .main_listbase_index = INDEX_ID_LI,
+    .struct_size = sizeof(Library),
+    .name = "Library",
+    .name_plural = "libraries",
+    .translation_context = BLT_I18NCONTEXT_ID_LIBRARY,
+    .flags = IDTYPE_FLAGS_NO_COPY | IDTYPE_FLAGS_NO_LIBLINKING | IDTYPE_FLAGS_NO_MAKELOCAL,
+
+    .init_data = NULL,
+    .copy_data = NULL,
+    .free_data = library_free_data,
+    .make_local = NULL,
+    .foreach_id = library_foreach_id,
+};
 
 void BKE_library_filepath_set(Main *bmain, Library *lib, const char *filepath)
 {

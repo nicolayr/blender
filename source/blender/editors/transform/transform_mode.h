@@ -27,9 +27,10 @@
 
 struct AnimData;
 struct LinkNode;
-struct TransInfo;
-struct TransDataContainer;
 struct TransData;
+struct TransDataContainer;
+struct TransInfo;
+struct wmOperator;
 
 /* header of TransDataEdgeSlideVert, TransDataEdgeSlideEdge */
 typedef struct TransDataGenericSlideVert {
@@ -40,6 +41,7 @@ typedef struct TransDataGenericSlideVert {
 
 /* transform_mode.c */
 bool transdata_check_local_center(TransInfo *t, short around);
+bool transform_mode_is_changeable(const int mode);
 void protectedTransBits(short protectflag, float vec[3]);
 void constraintTransLim(TransInfo *t, TransData *td);
 void postInputRotation(TransInfo *t, float values[3]);
@@ -56,6 +58,7 @@ void ElementResize(TransInfo *t, TransDataContainer *tc, TransData *td, float ma
 short getAnimEdit_SnapMode(TransInfo *t);
 void doAnimEdit_SnapFrame(
     TransInfo *t, TransData *td, TransData2D *td2d, struct AnimData *adt, short autosnap);
+void transform_mode_init(TransInfo *t, struct wmOperator *op, const int mode);
 
 /* transform_mode_align.c */
 void initAlign(TransInfo *t);
@@ -91,7 +94,6 @@ void initNormalRotation(TransInfo *t);
 void initSeqSlide(TransInfo *t);
 
 /* transform_mode_edge_slide.c */
-void projectEdgeSlideData(TransInfo *t, bool is_final);
 void drawEdgeSlide(TransInfo *t);
 void doEdgeSlide(TransInfo *t, float perc);
 void initEdgeSlide_ex(
@@ -150,7 +152,6 @@ void initTrackball(TransInfo *t);
 void initTranslation(TransInfo *t);
 
 /* transform_mode_vert_slide.c */
-void projectVertSlideData(TransInfo *t, bool is_final);
 void drawVertSlide(TransInfo *t);
 void doVertSlide(TransInfo *t, float perc);
 void initVertSlide_ex(TransInfo *t, bool use_even, bool flipped, bool use_clamp);
